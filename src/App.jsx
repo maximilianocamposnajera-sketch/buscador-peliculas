@@ -3,10 +3,17 @@ import "./App.css";
 
 // Firebase
 import { auth, db } from "./firebase";
-import { signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { 
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signOut
+} from "firebase/auth";
+
 import { 
   doc, setDoc, getDoc, updateDoc,
-  collection, getDocs, query, orderBy, limit 
+  collection, getDocs, query, orderBy, limit,
+  deleteDoc
 } from "firebase/firestore";
 
 export default function App() {
@@ -15,40 +22,61 @@ export default function App() {
   const [resultados, setResultados] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [detalle, setDetalle] = useState(null);
-  const [veredicto, setVeredicto] = useState("");
   const [sinResultados, setSinResultados] = useState(false);
 
   const [user, setUser] = useState(null);
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
   const [miCalificacion, setMiCalificacion] = useState("");
   const [calificacionGuardada, setCalificacionGuardada] = useState(null);
   const [cargandoCalificacion, setCargandoCalificacion] = useState(false);
 
   const [topPeliculas, setTopPeliculas] = useState([]);
+  const [misPeliculas, setMisPeliculas] = useState([]);
 
   useEffect(() => {
-    signInAnonymously(auth);
-
     onAuthStateChanged(auth, (u) => {
-      if (u) {
-        setUser(u);
-      }
+      setUser(u);
+      if (u) obtenerMisCalificaciones(u.uid);
     });
 
     obtenerTopPeliculas();
   }, []);
 
-  async function buscar() {
-    if (texto === "") {
-      alert("Escribe algo");
-      return;
+  async function registrar() {
+    try {
+      await createUserWithEmailAndPassword(auth, email, password);
+      alert("Usuario registrado");
+    } catch (error) {
+      alert(error.message);
     }
+  }
+
+  async function iniciarSesion() {
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      alert("Bienvenido");
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
+  function cerrarSesion() {
+    signOut(auth);
+    setMisPeliculas([]);
+  }
+
+  async function buscar() {
+    if (texto === "") return alert("Escribe algo");
 
     setCargando(true);
     setResultados([]);
     setSinResultados(false);
 
-    const response = await fetch("https://www.omdbapi.com/?apikey=c1d61990&s=" + texto);
-    const data = await response.json();
+    const res = await fetch("https://www.omdbapi.com/?apikey=c1d61990&s=" + texto);
+    const data = await res.json();
 
     setCargando(false);
 
@@ -61,21 +89,12 @@ export default function App() {
   }
 
   async function verDetalle(pelicula) {
-    const response = await fetch(
+    const res = await fetch(
       "https://www.omdbapi.com/?apikey=c1d61990&i=" + pelicula.imdbID + "&plot=full"
     );
-    const data = await response.json();
+    const data = await res.json();
+
     setDetalle(data);
-
-    try {
-      const rv = await fetch("http://localhost:3000/comentario?calificacion=" + data.imdbRating);
-      const resultado = await rv.json();
-      setVeredicto(resultado.comentario);
-    } catch (error) {
-      console.log("Error en veredicto:", error);
-    }
-
-    const user = auth.currentUser;
 
     if (user) {
       const ref = doc(db, "usuarios", user.uid, "calificaciones", pelicula.imdbID);
@@ -93,15 +112,13 @@ export default function App() {
 
   function cerrarModal() {
     setDetalle(null);
-    setVeredicto("");
-    setCalificacionGuardada(null);
     setMiCalificacion("");
+    setCalificacionGuardada(null);
   }
 
-  // 🔥 GUARDAR CALIFICACIÓN MEJORADO
   async function guardarCalificacion() {
-    if (!user) return alert("No hay usuario");
-    if (!miCalificacion) return alert("Pon una calificación");
+    if (!user) return alert("Inicia sesión");
+    if (!miCalificacion) return alert("Pon calificación");
 
     const cal = Number(miCalificacion);
     if (cal < 1 || cal > 10) return alert("Debe ser entre 1 y 10");
@@ -113,9 +130,10 @@ export default function App() {
       let calAnterior = null;
       if (userSnap.exists()) calAnterior = userSnap.data().calificacion;
 
-      // guardar usuario
       await setDoc(userRef, {
+        id: detalle.imdbID,
         titulo: detalle.Title,
+        poster: detalle.Poster,
         calificacion: cal,
         fecha: new Date()
       });
@@ -132,7 +150,7 @@ export default function App() {
 
           await updateDoc(peliRef, {
             sumaCalificaciones: nuevaSuma,
-            promedio: promedio
+            promedio
           });
 
         } else {
@@ -143,7 +161,7 @@ export default function App() {
           await updateDoc(peliRef, {
             sumaCalificaciones: nuevaSuma,
             totalCalificaciones: nuevoTotal,
-            promedio: promedio
+            promedio
           });
         }
 
@@ -156,16 +174,60 @@ export default function App() {
         });
       }
 
-      alert("Calificación guardada 🔥");
-      obtenerTopPeliculas();
+      alert("Guardado");
 
-    } catch (error) {
-      console.error(error);
-      alert("Error al guardar");
+      obtenerTopPeliculas();
+      obtenerMisCalificaciones(user.uid);
+
+    } catch (e) {
+      console.error(e);
+      alert("Error");
     }
   }
 
-  // 🔥 TOP 10 (ahora usa promedio)
+  async function eliminarCalificacion(peliId) {
+    try {
+      const userRef = doc(db, "usuarios", user.uid, "calificaciones", peliId);
+      const peliRef = doc(db, "peliculas", peliId);
+
+      const peliSnap = await getDoc(peliRef);
+      const userSnap = await getDoc(userRef);
+
+      if (!peliSnap.exists() || !userSnap.exists()) return;
+
+      const data = peliSnap.data();
+      const cal = userSnap.data().calificacion;
+
+      const nuevaSuma = data.sumaCalificaciones - cal;
+      const nuevoTotal = data.totalCalificaciones - 1;
+
+      if (nuevoTotal <= 0) {
+        await updateDoc(peliRef, {
+          sumaCalificaciones: 0,
+          totalCalificaciones: 0,
+          promedio: 0
+        });
+      } else {
+        await updateDoc(peliRef, {
+          sumaCalificaciones: nuevaSuma,
+          totalCalificaciones: nuevoTotal,
+          promedio: nuevaSuma / nuevoTotal
+        });
+      }
+
+      await deleteDoc(userRef);
+
+      obtenerTopPeliculas();
+      obtenerMisCalificaciones(user.uid);
+
+      alert("Eliminado");
+
+    } catch (e) {
+      console.error(e);
+      alert("Error al eliminar");
+    }
+  }
+
   async function obtenerTopPeliculas() {
     const q = query(
       collection(db, "peliculas"),
@@ -187,17 +249,70 @@ export default function App() {
     setTopPeliculas(lista);
   }
 
+  async function obtenerMisCalificaciones(uid) {
+    const ref = collection(db, "usuarios", uid, "calificaciones");
+    const snapshot = await getDocs(ref);
+
+    const lista = snapshot.docs.map(doc => ({
+      id: doc.id, 
+      ...doc.data()
+    }));
+
+    setMisPeliculas(lista);
+  }
+
+  if (!user) {
+    return (
+      <div className="login">
+        <h1>🎬 Buscador de Películas</h1>
+
+        <input type="email" placeholder="Correo" value={email} onChange={e => setEmail(e.target.value)} />
+        <input type="password" placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} />
+
+        <button onClick={iniciarSesion}>Iniciar sesión</button>
+        <button onClick={registrar}>Registrarse</button>
+      </div>
+    );
+  }
+
   return (
     <div>
 
       <h1>🎬 Buscador de Películas</h1>
+      <button onClick={cerrarSesion}>Cerrar sesión</button>
 
-      <h2>🔥 Top 10 Películas</h2>
+      <h2>Top 10 Películas</h2>
       <div className="top">
-        {topPeliculas.map((peli, index) => (
+        {topPeliculas.map((peli, i) => (
           <p key={peli.id}>
-            {index + 1}. {peli.titulo} ⭐ {peli.promedio.toFixed(1)}
+            {i + 1}. {peli.titulo} ⭐ {peli.promedio.toFixed(1)}
           </p>
+        ))}
+      </div>
+
+      <h2>🎯 Mis calificaciones</h2>
+      <div className="resultados">
+        {misPeliculas.map((peli, i) => (
+          <div key={i} className="tarjeta">
+            <img src={peli.poster} alt={peli.titulo} />
+            <h3>{peli.titulo}</h3>
+            <p>⭐ {peli.calificacion}</p>
+
+            <button onClick={() => {
+              setMiCalificacion(peli.calificacion);
+              setDetalle({
+                imdbID: peli.id,
+                Title: peli.titulo,
+                Poster: peli.poster
+              });
+            }}>
+              Editar
+            </button>
+
+            <button onClick={() => eliminarCalificacion(peli.id)}>
+              Eliminar
+            </button>
+          </div>
         ))}
       </div>
 
@@ -216,20 +331,11 @@ export default function App() {
       {sinResultados && <p>No se encontraron resultados</p>}
 
       <div className="resultados">
-        {resultados.map((pelicula) => (
-          <div
-            key={pelicula.imdbID}
-            className="tarjeta"
-            onClick={() => verDetalle(pelicula)}
-          >
-            <h3>{pelicula.Title}</h3>
-            <img
-              src={pelicula.Poster !== "N/A"
-                ? pelicula.Poster
-                : "https://via.placeholder.com/200x300"}
-              alt={pelicula.Title}
-            />
-            <p>Año: {pelicula.Year}</p>
+        {resultados.map((p) => (
+          <div key={p.imdbID} className="tarjeta" onClick={() => verDetalle(p)}>
+            <h3>{p.Title}</h3>
+            <img src={p.Poster !== "N/A" ? p.Poster : "https://via.placeholder.com/200x300"} />
+            <p>Año: {p.Year}</p>
           </div>
         ))}
       </div>
@@ -237,29 +343,20 @@ export default function App() {
       {detalle && (
         <div className="modal" onClick={(e) => e.target === e.currentTarget && cerrarModal()}>
           <div className="modal-contenido">
+
             <span onClick={cerrarModal}>&times;</span>
 
             <h2>{detalle.Title}</h2>
-
-            <img src={detalle.Poster} alt={detalle.Title} />
-
-            <p><b>Año:</b> {detalle.Year}</p>
-            <p><b>Género:</b> {detalle.Genre}</p>
-            <p><b>IMDb:</b> {detalle.imdbRating}</p>
-            <p><b>Sinopsis:</b> {detalle.Plot}</p>
-
-            {veredicto && <p><b>💬 Veredicto:</b> {veredicto}</p>}
-            {cargandoCalificacion && <p>Cargando...</p>}
+            <img src={detalle.Poster} />
 
             {calificacionGuardada && (
-              <p><b>⭐ Ya calificaste:</b> {calificacionGuardada}</p>
+              <p>⭐ Ya calificaste: {calificacionGuardada}</p>
             )}
 
             <input
               type="number"
               min="1"
               max="10"
-              placeholder="Tu calificación (1-10)"
               value={miCalificacion}
               onChange={(e) => setMiCalificacion(e.target.value)}
             />
