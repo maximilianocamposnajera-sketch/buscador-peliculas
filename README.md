@@ -19,7 +19,7 @@ Instalación
 Abre la terminal, navega a la carpeta donde quieras guardar el proyecto y ejecuta:
 bash
 # 1. Clonar el proyecto
-git clone https://github.com/hernandezemiliodev/buscadorPeliculas
+git clone https://github.com/maximilianocamposnajera-sketch/buscador-peliculas
 
 # 2. Entrar a la carpeta
 cd nombre-repo
